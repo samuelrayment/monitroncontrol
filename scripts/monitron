@@ -1,4 +1,19 @@
 #!/bin/env python
+from Queue import Queue, Empty
+
+from monitron.client import ClientThread
+
 
 if __name__ == '__main__':
     print 'monitron'
+    queue = Queue()
+    client_thread = ClientThread('server', 3333, queue)
+    client_thread.start()
+    
+    try:
+        while True:
+            print queue.get(False, 2)
+    except Empty:
+        pass
+
+    client_thread.join()
