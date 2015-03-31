@@ -1,7 +1,9 @@
 import socket
+from Queue import Queue
 
-from mock import Mock, call
-from monitron.client import ClientThread
+from nose_parameterized import parameterized, param
+from mock import Mock, call, patch
+from monitron.client import ClientThread, BuildStatusUpdate, BuildStatus
 
 
 def create_message_generator(number_of_messages, number_of_chunks):
@@ -22,38 +24,78 @@ def create_message_generator(number_of_messages, number_of_chunks):
     return messages
 
 
-def test_receiving_a_message_in_one_block():
+@parameterized([
+    (1, 1), (1, 3), (2, 7), (2,5)
+])
+def test_receiving_a_message_in_chunks(message_count, chunks):
     client_thread = ClientThread(None, None, None)
     mock_conn = Mock(spec=socket.socket)
-    mock_conn.recv.side_effect = create_message_generator(1, 1)
+    mock_conn.recv.side_effect = create_message_generator(message_count, chunks)
 
-    message, remainder = client_thread._receive_message(mock_conn)
+    remainder = ''
+    for i in range(message_count):
+        message, remainder = client_thread._receive_message(mock_conn, remainder)
+        assert message == 'message'
 
-    print message, remainder
-    assert message == 'message'
     assert remainder == ''
-    mock_conn.assert_has_calls([call.recv(4096)])
+    mock_conn.assert_has_calls([call.recv(4096)] * chunks)
 
-def test_a_message_spanning_three_blocks():
-    client_thread = ClientThread(None, None, None)
+
+@patch.object(ClientThread, '_receive_message')
+def test_read_and_send_on_message_parses_message_and_send_failure_to_queue(mock_receive):
+    message = '{"type":"builds","error":"","failing":[{"name":"Failing Build","building":false,"user":"","url":"http://localhost:8000/job/Failing%20Build/","number_of_failures":1,"failing_since":1425590828000}],"acknowledged":[],"healthy":[]}'
+    mock_receive.return_value = (message, 'b')
     mock_conn = Mock(spec=socket.socket)
-    mock_conn.recv.side_effect = create_message_generator(1, 3)
+    mock_queue = Mock(spec=Queue)
 
-    message, remainder = client_thread._receive_message(mock_conn)
+    client_thread = ClientThread(None, None, mock_queue)
 
-    assert message == 'message'
-    assert remainder == ''
-    mock_conn.assert_has_calls([call.recv(4096), call.recv(4096), call.recv(4096)])
+    remainder = client_thread.read_and_send_on_message(mock_conn, '')
 
-def test_two_messages_spanning_five_blocks():
-    client_thread = ClientThread(None, None, None)
-    mock_conn = Mock(spec=socket.socket)
-    mock_conn.recv.side_effect = create_message_generator(2, 7)
+    assert remainder == 'b'
+    mock_queue.assert_has_calls([
+        call.put(BuildStatusUpdate(BuildStatus.Failing))
+    ])
+    mock_receive.assert_has_calls([
+        call(mock_conn, '')
+    ])
 
-    message1, remainder = client_thread._receive_message(mock_conn)
-    message2, remainder = client_thread._receive_message(mock_conn, remainder)
     
-    assert message1 == 'message'
-    assert message2 == 'message'
-    assert remainder == ''
-    mock_conn.assert_has_calls([call.recv(4096), call.recv(4096), call.recv(4096), call.recv(4096), call.recv(4096)])
+@patch.object(ClientThread, '_receive_message')
+def test_read_and_send_on_message_parses_message_and_send_acknowledged_to_queue(mock_receive):
+    message = '{"type":"builds","error":"","failing":[],"acknowledged":[{"name":"Build","building":false,"user":"","url":"http://localhost:8000/job/Failing%20Build/","number_of_failures":0,"failing_since":0}],"healthy":[]}'
+    mock_receive.return_value = (message, 'b')
+    mock_conn = Mock(spec=socket.socket)
+    mock_queue = Mock(spec=Queue)
+
+    client_thread = ClientThread(None, None, mock_queue)
+
+    remainder = client_thread.read_and_send_on_message(mock_conn, '')
+
+    assert remainder == 'b'
+    mock_queue.assert_has_calls([
+        call.put(BuildStatusUpdate(BuildStatus.Acknowledged))
+    ])
+    mock_receive.assert_has_calls([
+        call(mock_conn, '')
+    ])
+
+
+@patch.object(ClientThread, '_receive_message')
+def test_read_and_send_on_message_parses_message_and_send_passing_to_queue(mock_receive):
+    message = '{"type":"builds","error":"","failing":[],"acknowledged":[],"healthy":[{"name":"Build","building":false,"user":"","url":"http://localhost:8000/job/Failing%20Build/","number_of_failures":0,"failing_since":0}]}'
+    mock_receive.return_value = (message, 'b')
+    mock_conn = Mock(spec=socket.socket)
+    mock_queue = Mock(spec=Queue)
+
+    client_thread = ClientThread(None, None, mock_queue)
+
+    remainder = client_thread.read_and_send_on_message(mock_conn, '')
+
+    assert remainder == 'b'
+    mock_queue.assert_has_calls([
+        call.put(BuildStatusUpdate(BuildStatus.Passing))
+    ])
+    mock_receive.assert_has_calls([
+        call(mock_conn, '')
+    ])
