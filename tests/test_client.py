@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 import socket
-from Queue import Queue
+from queue import Queue
 
 from nose_parameterized import parameterized, param
 from mock import Mock, call, patch
@@ -11,12 +12,12 @@ def create_message_generator(number_of_messages, number_of_chunks):
     Return an iterator to be used as a `socket.recv` side effect that returns 
     `number_of_messages` messages split in `number_of_chunks` chunks.
     """
-    total_messages = 'message\r\n' * number_of_messages
+    total_messages = b'message\n' * number_of_messages
     message_length = len(total_messages)
-    chunk_length = message_length / number_of_chunks 
-    excess_chunk = message_length % chunk_length
+    chunk_length = message_length // number_of_chunks
+    excess_chunk = message_length - chunk_length * number_of_chunks 
     messages = [total_messages[i:i+chunk_length] 
-            for i in range(0, message_length, chunk_length)]
+            for i in range(0, number_of_chunks * chunk_length, chunk_length)]
     # add excess to the end
     if excess_chunk:
         messages[-1] += total_messages[-excess_chunk:]
@@ -37,6 +38,8 @@ def test_receiving_a_message_in_chunks(message_count, chunks):
         message, remainder = client_thread._receive_message(mock_conn, remainder)
         assert message == 'message'
 
+    print('remainder: %s' % remainder)
+    print('rem len: %d' % len(remainder))
     assert remainder == ''
     mock_conn.assert_has_calls([call.recv(4096)] * chunks)
 

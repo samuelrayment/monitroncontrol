@@ -6,8 +6,12 @@ server and receiving build status updates.
 import socket
 import threading
 import json
+import logging
 
 from enum import Enum
+
+
+logger = logging.getLogger('monitron.client')
 
 
 class BuildStatusUpdate(object):
@@ -20,6 +24,9 @@ class BuildStatusUpdate(object):
     def __eq__(self, other):
         return self.status == other.status
 
+    def __str__(self):
+        return 'BuildStatusUpdate: %s' % self.status
+
 
 class BuildStatus(Enum):
     """
@@ -28,6 +35,7 @@ class BuildStatus(Enum):
     Failing = 'failing'
     Acknowledged = 'acknowledged'
     Passing = 'passing'
+    ParsingError = 'parsing-error'
 
 
 class ClientThread(threading.Thread):
@@ -37,7 +45,7 @@ class ClientThread(threading.Thread):
     """
     socket_timeout = 10
     message_chunk_size = 4096
-    message_separator = '\r\n'
+    message_separator = '\n'
 
     def __init__(self, server, port, send_queue):
         super(ClientThread, self).__init__()
@@ -47,15 +55,18 @@ class ClientThread(threading.Thread):
     
     def run(self):
         conn = socket.create_connection((self.server, self.port), self.socket_timeout)
+        conn.settimeout(None)
         remainder = ''
         while True:
             remainder = self.read_and_send_on_message(conn, remainder)
 
     def read_and_send_on_message(self, conn, remainder=''):
         message, remainder = self._receive_message(conn, remainder)
-        json_message = json.loads(message)
-        # TODO catch ValueError
-        self.send_queue.put(self._parse_json_to_status_update(json_message))
+        try:
+            json_message = json.loads(message)
+            self.send_queue.put(self._parse_json_to_status_update(json_message))
+        except ValueError:
+            self.send_queue.put(BuildStatus.ParsingError)
         return remainder
 
     def _parse_json_to_status_update(self, json_message):
@@ -72,6 +83,7 @@ class ClientThread(threading.Thread):
         while True:
             try:
                 message_part = conn.recv(self.message_chunk_size)
+                message_part = message_part.decode('utf-8', 'strict')
                 message_data.append(message_part)
                 # this is not efficient as we join alot but we need to cope
                 # with separators on boundaries of reads, this passes the tests
@@ -81,11 +93,13 @@ class ClientThread(threading.Thread):
                 if separator_index > 0:
                     # we've found the end of the message
                     return complete_message[:separator_index], complete_message[separator_index + len(self.message_separator):]
+            except socket.timeout as e:
+                continue
             except socket.error as e:
                 # TODO logging
-                print e
+                logger.error(e)
                 raise
             if message_part == '':
                 # socket error
-                print 'socket error'
+                logger.error('socket error, no data returned')
                 return ('', '')
